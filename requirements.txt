@@ -1,5 +1,5 @@
 python-telegram-bot==20.5
 quart==0.18.4
-hypercorn==0.14.5
+hypercorn==0.17.3
 python-dotenv==1.0.0
 pytz==2023.3
