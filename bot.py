@@ -136,6 +136,9 @@ async def main():
     # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("timer", timer_command))
+
+    # Инициализация приложения
+    await application.initialize()  # <-- Важная строка
     
     # Установка вебхука
     await application.bot.set_webhook(
