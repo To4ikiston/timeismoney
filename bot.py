@@ -29,7 +29,7 @@ BAR_LENGTH = 16
 ekb_tz = ZoneInfo("Asia/Yekaterinburg")
 START_DATE = datetime.datetime(2025, 3, 14, 0, 0, tzinfo=ekb_tz)
 END_DATE = datetime.datetime(2025, 7, 1, 23, 59, tzinfo=ekb_tz)
-UPDATE_INTERVAL = 1  # Обновление каждые 10 секунд
+UPDATE_INTERVAL = 60  # Обновление каждые 10 секунд
 
 app = Quart(__name__)
 application = None
@@ -138,6 +138,7 @@ async def telegram_webhook():
 
 async def countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    thread_id = update.message.message_thread_id  # Получаем ID темы
     
     # Останавливаем предыдущий таймер
     if chat_id in active_timers:
@@ -152,7 +153,8 @@ async def countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await context.bot.send_message(
             chat_id=chat_id,
             text="🔄 Запускаю таймер...",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Инициализация...", callback_data="none")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Инициализация...", callback_data="none")]]),  # Запятая
+            message_thread_id=thread_id  # Теперь переменная определена
         )
         
         task = asyncio.create_task(timer_task(chat_id, context))
