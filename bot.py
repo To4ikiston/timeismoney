@@ -90,9 +90,9 @@ async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=data["message_id"],
-            text="⏳ 14.03 — 01.07.2025",
+            text="ОСТАЛОСЬ",
             reply_markup=InlineKeyboardMarkup([[time_button], [progress_button]])
-            
+        )            
     except BadRequest as e:
         if "not modified" not in str(e):
             logger.error(f"Ошибка редактирования: {e}")
