@@ -29,7 +29,7 @@ BAR_LENGTH = 16
 ekb_tz = ZoneInfo("Asia/Yekaterinburg")
 START_DATE = datetime.datetime(2025, 3, 14, 0, 0, tzinfo=ekb_tz)  # Начало отсчёта
 END_DATE = datetime.datetime(2025, 7, 1, 23, 59, tzinfo=ekb_tz)    # Конец отсчёта
-UPDATE_INTERVAL = 1  # Обновление каждую секунду
+UPDATE_INTERVAL = 10  # Обновление каждую секунду
 
 # Инициализация приложений
 app = Quart(__name__)
