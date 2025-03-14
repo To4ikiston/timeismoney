@@ -1,6 +1,6 @@
 quart==0.18.4
 werkzeug==2.0.3
-hypercorn==0.14.5
+hypercorn==0.17.3  # Актуальная версия
 python-telegram-bot==20.5
 python-dotenv==1.0.0
 pytz==2023.3
