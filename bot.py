@@ -41,26 +41,27 @@ active_timers = {}  # {chat_id: {"message_id": int, "task": asyncio.Task, "threa
 async def calculate_progress() -> tuple:
     """Возвращает (дней осталось, часов, минут, секунд, процент выполнения)"""
     now = datetime.datetime.now(ekb_tz)
+    logger.info(f"Текущее время сервера: {now}")
     
     if now < START_DATE:
-        # Если текущее время раньше START_DATE, считаем от START_DATE до END_DATE
-        total_duration = (END_DATE - START_DATE).total_seconds()
+        # Время до начала отсчёта
         time_left = END_DATE - START_DATE
         progress = 0.0
     elif now > END_DATE:
-        # Если время истекло
+        # Время истекло
         return 0, 0, 0, 0, 100
     else:
         # Активный отсчёт
+        time_left = END_DATE - now
         total_duration = (END_DATE - START_DATE).total_seconds()
         elapsed = (now - START_DATE).total_seconds()
         progress = elapsed / total_duration
-        time_left = END_DATE - now
 
     days = time_left.days
     hours, rem = divmod(time_left.seconds, 3600)
     minutes, seconds = divmod(rem, 60)
     
+    logger.info(f"Расчёт: days={days}, h={hours}, m={minutes}, s={seconds}, progress={progress}")
     return days, hours, minutes, seconds, int(progress * 100)
 
 async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
@@ -69,8 +70,11 @@ async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
         if not data:
             return
 
-        # Получаем текущее состояние
         days, h, m, s, progress = await calculate_progress()
+        
+        # Дебаг-логи
+        logger.info(f"Обновление: {days}д {h:02d}:{m:02d}:{s:02d} ({progress}%)")
+        
         filled_len = int(BAR_LENGTH * (progress / 100))
         bar_str = "█" * filled_len + "─" * (BAR_LENGTH - filled_len)
         
@@ -94,7 +98,7 @@ async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=data["message_id"],
-            text=f"ОСТАЛОСЬ",
+            text=f"⏳ 14.03 — 01.07.2025",
             reply_markup=InlineKeyboardMarkup([[time_button], [progress_button]])
         )
     except BadRequest as e:
