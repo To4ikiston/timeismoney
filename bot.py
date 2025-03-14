@@ -73,12 +73,12 @@ async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
             callback_data="none"
         )
         
+        # Убрали message_thread_id из аргументов
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=data["message_id"],
             text=f"До {TARGET_DATETIME.strftime('%Y-%m-%d %H:%M')} (ЕКБ) осталось:",
-            reply_markup=InlineKeyboardMarkup([[time_button], [progress_button]]),
-            message_thread_id=data["thread_id"]
+            reply_markup=InlineKeyboardMarkup([[time_button], [progress_button]])
         )
     except Exception as e:
         logger.error(f"Ошибка обновления: {e}")
