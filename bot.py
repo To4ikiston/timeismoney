@@ -58,6 +58,17 @@ async def calculate_progress() -> tuple:
     return days, hours, minutes, seconds, int(progress * 100)
 
 async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    def get_day_form(days: int) -> str:
+        if 11 <= days % 100 <= 14:
+            return "дней"
+        remainder = days % 10
+        if remainder == 1:
+            return "день"
+        elif 2 <= remainder <= 4:
+            return "дня"
+        else:
+            return "дней"
+        
     try:
         data = active_timers.get(chat_id)
         if not data:
@@ -78,7 +89,7 @@ async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
         
         # Создаем кнопки
         time_button = InlineKeyboardButton(
-            f"{days}д {h:02d}:{m:02d}:{s:02d}", 
+            f"{days} {get_day_form(days)} {h:02d}ч {m:02d}м", 
             callback_data="none"
         )
         progress_button = InlineKeyboardButton(
