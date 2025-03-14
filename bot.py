@@ -19,64 +19,72 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-APP_URL = os.getenv("APP_URL")  # Пример: https://your-domain.com
+APP_URL = os.getenv("APP_URL")
 PORT = int(os.getenv("PORT", "8000"))
 SECRET_TOKEN = os.getenv("SECRET_TOKEN")
-BAR_LENGTH = 16 
+BAR_LENGTH = 16
+
 # Часовой пояс и даты
 ekb_tz = ZoneInfo("Asia/Yekaterinburg")
-START_DATE = datetime.datetime(2025, 3, 14, 0, 0, tzinfo=ekb_tz)
-END_DATE = datetime.datetime(2025, 7, 1, 23, 59, tzinfo=ekb_tz)
-UPDATE_INTERVAL = 60  # Обновление каждые 60 секунд
+TARGET_DATETIME = datetime.datetime(2025, 3, 14, 0, 0, tzinfo=ekb_tz)  # Ваша целевая дата
+UPDATE_INTERVAL = 1  # Обновление каждую секунду
 
 # Инициализация приложений
 app = Quart(__name__)
-application = None  # Инициализируется в main()
+application = None
 
-# Глобальное хранилище (для простоты)
-active_timers = {}  # Формат: {chat_id: {"message_id": int, "task": asyncio.Task}}
+# Глобальное хранилище
+active_timers = {}  # {chat_id: {"message_id": int, "task": asyncio.Task, "thread_id": int}}
 
 async def calculate_progress() -> tuple:
-    """Возвращает (дней осталось, процент выполнения)"""
+    """Возвращает (дней, часов, минут, секунд, процент выполнения)"""
     now = datetime.datetime.now(ekb_tz)
-    total_seconds = (END_DATE - START_DATE).total_seconds()
-    elapsed = (now - START_DATE).total_seconds()
+    diff = TARGET_DATETIME - now
+    total_seconds = diff.total_seconds()
     
-    if elapsed < 0:
-        return (END_DATE - START_DATE).days, 0.0
+    if total_seconds <= 0:
+        return 0, 0, 0, 0, 100
+
+    days = diff.days
+    hours, rem = divmod(diff.seconds, 3600)
+    minutes, seconds = divmod(rem, 60)
     
-    progress = min(elapsed / total_seconds, 1.0) if total_seconds > 0 else 0.0
-    days_left = (END_DATE - now).days
-    return days_left, progress
+    total_duration = (TARGET_DATETIME - datetime.datetime.now(ekb_tz)).total_seconds()
+    progress = min((total_duration - total_seconds) / total_duration, 1.0)
+    
+    return days, hours, minutes, seconds, int(progress * 100)
 
 async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Обновляет сообщение с таймером"""
     try:
-        days_left, progress = await calculate_progress()
-        percent = int(progress * 100)
+        data = active_timers.get(chat_id)
+        if not data:
+            return
+
+        days, h, m, s, progress = await calculate_progress()
+        filled_len = int(BAR_LENGTH * (progress / 100))
+        bar_str = "█" * filled_len + "─" * (BAR_LENGTH - filled_len)
         
-        # Прогресс-бар (20 символов)
-        bar = "⬛" * int(BAR_LENGTH * progress) + "⬜" * (BAR_LENGTH - int(BAR_LENGTH * progress))  # <-- Здесь 16
-        
-        # Большая кнопка с текстом
-        text = f"Дней осталось: {days_left}\n{bar} {percent}%"
-        keyboard = [[InlineKeyboardButton(text, callback_data="refresh")]]
+        time_button = InlineKeyboardButton(
+            f"{days}д {h:02d}:{m:02d}:{s:02d}", 
+            callback_data="none"
+        )
+        progress_button = InlineKeyboardButton(
+            f"[{bar_str}]{progress}%", 
+            callback_data="none"
+        )
         
         await context.bot.edit_message_text(
             chat_id=chat_id,
-            message_id=active_timers[chat_id]["message_id"],
-            text="⏳ Таймер до 1 июля 2025 (ЕКБ):",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            message_id=data["message_id"],
+            text=f"До {TARGET_DATETIME.strftime('%Y-%m-%d %H:%M')} (ЕКБ) осталось:",
+            reply_markup=InlineKeyboardMarkup([[time_button], [progress_button]]),
+            message_thread_id=data["thread_id"]
         )
     except Exception as e:
         logger.error(f"Ошибка обновления: {e}")
 
 async def timer_task(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Фоновая задача для обновления таймера"""
-    while True:
-        if chat_id not in active_timers:
-            break
-            
+    while chat_id in active_timers:
         await update_timer_message(chat_id, context)
         await asyncio.sleep(UPDATE_INTERVAL)
 
@@ -86,7 +94,6 @@ async def health():
 
 @app.route('/telegram', methods=['POST'])
 async def telegram_webhook():
-    """Обработчик вебхуков Telegram"""
     try:
         update = Update.de_json(await request.get_json(), application.bot)
         await application.process_update(update)
@@ -95,58 +102,55 @@ async def telegram_webhook():
         logger.error(f"Webhook error: {e}", exc_info=True)
         return 'ERROR', 500
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
-    await update.message.reply_text(
-        "⏰ Я бот-таймер!\n"
-        "Используй /timer в группе или чате, чтобы запустить обратный отсчёт до 1 июля 2025."
-    )
-
-async def timer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /timer"""
+async def countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /countdown"""
     chat_id = update.effective_chat.id
+    thread_id = update.message.message_thread_id
     
-    # Останавливаем предыдущий таймер
     if chat_id in active_timers:
         active_timers[chat_id]["task"].cancel()
     
-    # Создаем новое сообщение
     msg = await context.bot.send_message(
         chat_id=chat_id,
         text="🔄 Запускаю таймер...",
+        message_thread_id=thread_id,
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Инициализация...", callback_data="none")]])
     )
     
-    # Запускаем фоновую задачу
-    task = asyncio.create_task(timer_task(chat_id, context))
     active_timers[chat_id] = {
         "message_id": msg.message_id,
-        "task": task
+        "task": asyncio.create_task(timer_task(chat_id, context)),
+        "thread_id": thread_id
     }
     
-    # Первое обновление
     await update_timer_message(chat_id, context)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    thread_id = update.message.message_thread_id
+    text = (
+        "🚀 Доступные команды:\n"
+        "/countdown - Запустить/перезапустить таймер\n"
+        "/help - Показать это сообщение"
+    )
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        message_thread_id=thread_id
+    )
 
 async def main():
     global application
-    
-    # Инициализация бота
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Регистрация обработчиков
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("timer", timer_command))
-
-    # Инициализация приложения
-    await application.initialize()  # <-- Важная строка
+    application.add_handler(CommandHandler("countdown", countdown))
+    application.add_handler(CommandHandler("help", help_command))
     
-    # Установка вебхука
+    await application.initialize()
     await application.bot.set_webhook(
         url=f"{APP_URL}/telegram",
         secret_token=SECRET_TOKEN
     )
     
-    # Запуск сервера
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
     await serve(app, config)
