@@ -8,7 +8,7 @@ from quart import Quart, request
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import BadRequest
+from telegram.error import BadRequest, RetryAfter
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # Настройки логгера
@@ -27,41 +27,34 @@ BAR_LENGTH = 16
 
 # Часовой пояс и даты
 ekb_tz = ZoneInfo("Asia/Yekaterinburg")
-START_DATE = datetime.datetime(2025, 3, 14, 0, 0, tzinfo=ekb_tz)  # Начало отсчёта
-END_DATE = datetime.datetime(2025, 7, 1, 23, 59, tzinfo=ekb_tz)    # Конец отсчёта
-UPDATE_INTERVAL = 10  # Обновление каждую секунду
+START_DATE = datetime.datetime(2025, 3, 14, 0, 0, tzinfo=ekb_tz)
+END_DATE = datetime.datetime(2025, 7, 1, 23, 59, tzinfo=ekb_tz)
+UPDATE_INTERVAL = 10  # Обновление каждые 10 секунд
 
-# Инициализация приложений
 app = Quart(__name__)
 application = None
 
-# Глобальное хранилище
-active_timers = {}  # {chat_id: {"message_id": int, "task": asyncio.Task, "thread_id": int, "last_state": tuple}}
+active_timers = {}  # {chat_id: {"message_id": int, "task": asyncio.Task}}
 
 async def calculate_progress() -> tuple:
-    """Возвращает (дней осталось, часов, минут, секунд, процент выполнения)"""
+    """Возвращает (дней, часов, минут, секунд, процент выполнения)"""
     now = datetime.datetime.now(ekb_tz)
-    logger.info(f"Текущее время сервера: {now}")
     
     if now < START_DATE:
-        # Время до начала отсчёта
         time_left = END_DATE - START_DATE
         progress = 0.0
     elif now > END_DATE:
-        # Время истекло
         return 0, 0, 0, 0, 100
     else:
-        # Активный отсчёт
         time_left = END_DATE - now
         total_duration = (END_DATE - START_DATE).total_seconds()
         elapsed = (now - START_DATE).total_seconds()
-        progress = elapsed / total_duration
+        progress = min(elapsed / total_duration, 1.0)  # Защита от переполнения
 
     days = time_left.days
     hours, rem = divmod(time_left.seconds, 3600)
     minutes, seconds = divmod(rem, 60)
     
-    logger.info(f"Расчёт: days={days}, h={hours}, m={minutes}, s={seconds}, progress={progress}")
     return days, hours, minutes, seconds, int(progress * 100)
 
 async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
@@ -71,46 +64,60 @@ async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
             return
 
         days, h, m, s, progress = await calculate_progress()
+        current_state = (days, h, m, s, progress)
         
-        # Дебаг-логи
-        logger.info(f"Обновление: {days}д {h:02d}:{m:02d}:{s:02d} ({progress}%)")
+        # Пропускаем обновление если состояние не изменилось
+        if data.get("last_state") == current_state:
+            return
+            
+        data["last_state"] = current_state
         
+        # Формируем прогресс-бар
         filled_len = int(BAR_LENGTH * (progress / 100))
         bar_str = "█" * filled_len + "─" * (BAR_LENGTH - filled_len)
         
-        # Проверяем изменения
-        current_state = (days, h, m, s, progress)
-        if data.get("last_state") == current_state:
-            return
-        
-        data["last_state"] = current_state
-        
-        # Формируем сообщение
+        # Создаем кнопки
         time_button = InlineKeyboardButton(
             f"{days}д {h:02d}:{m:02d}:{s:02d}", 
             callback_data="none"
         )
         progress_button = InlineKeyboardButton(
-            f"[{bar_str}]{progress}%", 
+            f"[{bar_str}] {progress}%", 
             callback_data="none"
         )
         
+        # Обновляем сообщение
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=data["message_id"],
-            text=f"⏳ 14.03 — 01.07.2025",
+            text="⏳ 14.03 — 01.07.2025",
             reply_markup=InlineKeyboardMarkup([[time_button], [progress_button]])
-        )
+            
     except BadRequest as e:
         if "not modified" not in str(e):
-            logger.error(f"Ошибка: {e}")
+            logger.error(f"Ошибка редактирования: {e}")
+    except RetryAfter as e:
+        logger.warning(f"Лимит запросов! Ждем {e.retry_after} сек.")
+        await asyncio.sleep(e.retry_after)
     except Exception as e:
-        logger.error(f"Ошибка обновления: {e}")
+        logger.error(f"Неизвестная ошибка: {e}")
 
 async def timer_task(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    while chat_id in active_timers:
-        await update_timer_message(chat_id, context)
-        await asyncio.sleep(UPDATE_INTERVAL)
+    """Задача для периодического обновления"""
+    while True:
+        try:
+            if chat_id not in active_timers:
+                break
+                
+            await update_timer_message(chat_id, context)
+            await asyncio.sleep(UPDATE_INTERVAL)
+            
+        except asyncio.CancelledError:
+            logger.info("Задача отменена")
+            break
+        except Exception as e:
+            logger.error(f"Ошибка в таймер-задаче: {e}")
+            await asyncio.sleep(10)
 
 @app.route('/health')
 async def health():
@@ -118,42 +125,49 @@ async def health():
 
 @app.route('/telegram', methods=['POST'])
 async def telegram_webhook():
+    if await request.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET_TOKEN:
+        return "Unauthorized", 401
+        
     try:
         update = Update.de_json(await request.get_json(), application.bot)
         await application.process_update(update)
         return 'OK', 200
     except Exception as e:
-        logger.error(f"Webhook error: {e}", exc_info=True)
+        logger.error(f"Webhook error: {e}")
         return 'ERROR', 500
 
 async def countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /countdown"""
     chat_id = update.effective_chat.id
-    thread_id = update.message.message_thread_id
     
     # Останавливаем предыдущий таймер
     if chat_id in active_timers:
-        active_timers[chat_id]["task"].cancel()
-    
-    # Создаем сообщение в теме
-    msg = await context.bot.send_message(
-        chat_id=chat_id,
-        text="🔄 Запускаю таймер...",
-        message_thread_id=thread_id,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Инициализация...", callback_data="none")]])
-    )
-    
-    active_timers[chat_id] = {
-        "message_id": msg.message_id,
-        "task": asyncio.create_task(timer_task(chat_id, context)),
-        "thread_id": thread_id,
-        "last_state": None
-    }
-    
-    await update_timer_message(chat_id, context)
+        try:
+            active_timers[chat_id]["task"].cancel()
+        except:
+            pass
+        del active_timers[chat_id]
+
+    # Создаем новое сообщение
+    try:
+        msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text="🔄 Запускаю таймер...",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Инициализация...", callback_data="none")]])
+        )
+        
+        task = asyncio.create_task(timer_task(chat_id, context))
+        active_timers[chat_id] = {
+            "message_id": msg.message_id,
+            "task": task
+        }
+        
+        await update_timer_message(chat_id, context)
+        
+    except Exception as e:
+        logger.error(f"Ошибка запуска таймера: {e}")
+        await context.bot.send_message(chat_id, "❌ Ошибка запуска таймера")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thread_id = update.message.message_thread_id
     text = (
         "🚀 Команды бота:\n"
         "/countdown - Запустить таймер\n"
@@ -162,8 +176,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=text,
-        message_thread_id=thread_id
+        text=text
     )
 
 async def main():
@@ -188,3 +201,10 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Бот остановлен")
+    finally:
+        # Очистка при завершении
+        for chat_id in list(active_timers.keys()):
+            try:
+                active_timers[chat_id]["task"].cancel()
+            except:
+                pass
