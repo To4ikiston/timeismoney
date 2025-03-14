@@ -29,7 +29,7 @@ BAR_LENGTH = 16
 ekb_tz = ZoneInfo("Asia/Yekaterinburg")
 START_DATE = datetime.datetime(2025, 3, 14, 0, 0, tzinfo=ekb_tz)
 END_DATE = datetime.datetime(2025, 7, 1, 23, 59, tzinfo=ekb_tz)
-UPDATE_INTERVAL = 10  # Обновление каждые 10 секунд
+UPDATE_INTERVAL = 1  # Обновление каждые 10 секунд
 
 app = Quart(__name__)
 application = None
@@ -125,7 +125,7 @@ async def health():
 
 @app.route('/telegram', methods=['POST'])
 async def telegram_webhook():
-    if await request.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET_TOKEN:
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET_TOKEN:
         return "Unauthorized", 401
         
     try:
