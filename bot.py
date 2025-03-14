@@ -8,6 +8,7 @@ from quart import Quart, request
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # Настройки логгера
@@ -26,7 +27,8 @@ BAR_LENGTH = 16
 
 # Часовой пояс и даты
 ekb_tz = ZoneInfo("Asia/Yekaterinburg")
-TARGET_DATETIME = datetime.datetime(2025, 3, 14, 0, 0, tzinfo=ekb_tz)  # Ваша целевая дата
+START_DATE = datetime.datetime(2025, 3, 14, 0, 0, tzinfo=ekb_tz)  # Начало отсчёта
+END_DATE = datetime.datetime(2025, 7, 1, 23, 59, tzinfo=ekb_tz)    # Конец отсчёта
 UPDATE_INTERVAL = 1  # Обновление каждую секунду
 
 # Инициализация приложений
@@ -34,23 +36,30 @@ app = Quart(__name__)
 application = None
 
 # Глобальное хранилище
-active_timers = {}  # {chat_id: {"message_id": int, "task": asyncio.Task, "thread_id": int}}
+active_timers = {}  # {chat_id: {"message_id": int, "task": asyncio.Task, "thread_id": int, "last_state": tuple}}
 
 async def calculate_progress() -> tuple:
-    """Возвращает (дней, часов, минут, секунд, процент выполнения)"""
+    """Возвращает (дней осталось, часов, минут, секунд, процент выполнения)"""
     now = datetime.datetime.now(ekb_tz)
-    diff = TARGET_DATETIME - now
-    total_seconds = diff.total_seconds()
     
-    if total_seconds <= 0:
+    if now < START_DATE:
+        # Если текущее время раньше START_DATE, считаем от START_DATE до END_DATE
+        total_duration = (END_DATE - START_DATE).total_seconds()
+        time_left = END_DATE - START_DATE
+        progress = 0.0
+    elif now > END_DATE:
+        # Если время истекло
         return 0, 0, 0, 0, 100
+    else:
+        # Активный отсчёт
+        total_duration = (END_DATE - START_DATE).total_seconds()
+        elapsed = (now - START_DATE).total_seconds()
+        progress = elapsed / total_duration
+        time_left = END_DATE - now
 
-    days = diff.days
-    hours, rem = divmod(diff.seconds, 3600)
+    days = time_left.days
+    hours, rem = divmod(time_left.seconds, 3600)
     minutes, seconds = divmod(rem, 60)
-    
-    total_duration = (TARGET_DATETIME - datetime.datetime.now(ekb_tz)).total_seconds()
-    progress = min((total_duration - total_seconds) / total_duration, 1.0)
     
     return days, hours, minutes, seconds, int(progress * 100)
 
@@ -60,10 +69,19 @@ async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
         if not data:
             return
 
+        # Получаем текущее состояние
         days, h, m, s, progress = await calculate_progress()
         filled_len = int(BAR_LENGTH * (progress / 100))
         bar_str = "█" * filled_len + "─" * (BAR_LENGTH - filled_len)
         
+        # Проверяем изменения
+        current_state = (days, h, m, s, progress)
+        if data.get("last_state") == current_state:
+            return
+        
+        data["last_state"] = current_state
+        
+        # Формируем сообщение
         time_button = InlineKeyboardButton(
             f"{days}д {h:02d}:{m:02d}:{s:02d}", 
             callback_data="none"
@@ -73,13 +91,15 @@ async def update_timer_message(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
             callback_data="none"
         )
         
-        # Убрали message_thread_id из аргументов
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=data["message_id"],
-            text=f"До {TARGET_DATETIME.strftime('%Y-%m-%d %H:%M')} (ЕКБ) осталось:",
+            text=f"ОСТАЛОСЬ",
             reply_markup=InlineKeyboardMarkup([[time_button], [progress_button]])
         )
+    except BadRequest as e:
+        if "not modified" not in str(e):
+            logger.error(f"Ошибка: {e}")
     except Exception as e:
         logger.error(f"Ошибка обновления: {e}")
 
@@ -107,9 +127,11 @@ async def countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     thread_id = update.message.message_thread_id
     
+    # Останавливаем предыдущий таймер
     if chat_id in active_timers:
         active_timers[chat_id]["task"].cancel()
     
+    # Создаем сообщение в теме
     msg = await context.bot.send_message(
         chat_id=chat_id,
         text="🔄 Запускаю таймер...",
@@ -120,7 +142,8 @@ async def countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_timers[chat_id] = {
         "message_id": msg.message_id,
         "task": asyncio.create_task(timer_task(chat_id, context)),
-        "thread_id": thread_id
+        "thread_id": thread_id,
+        "last_state": None
     }
     
     await update_timer_message(chat_id, context)
@@ -128,9 +151,10 @@ async def countdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id
     text = (
-        "🚀 Доступные команды:\n"
-        "/countdown - Запустить/перезапустить таймер\n"
-        "/help - Показать это сообщение"
+        "🚀 Команды бота:\n"
+        "/countdown - Запустить таймер\n"
+        "/help - Показать справку\n\n"
+        "Таймер отсчитывает время с 14.03.2025 до 01.07.2025"
     )
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
