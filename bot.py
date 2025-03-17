@@ -194,17 +194,43 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     global application
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    max_attempts = 3  # Максимум 3 попытки
+    attempt = 0
     
-    application.add_handler(CommandHandler("countdown", countdown))
-    application.add_handler(CommandHandler("help", help_command))
+    while attempt < max_attempts:
+        try:
+            application = ApplicationBuilder().token(BOT_TOKEN).build()
+            application.add_handler(CommandHandler("countdown", countdown))
+            application.add_handler(CommandHandler("help", help_command))
+            
+            await application.initialize()
+            
+            # Удаляем старый вебхук
+            await application.bot.delete_webhook()
+            logger.info("Старый вебхук удален")
+            
+            # Устанавливаем новый вебхук
+            await application.bot.set_webhook(
+                url=f"{APP_URL}/telegram",
+                secret_token=SECRET_TOKEN
+            )
+            logger.info(f"Новый вебхук установлен: {APP_URL}/telegram")
+            
+            # Проверяем статус вебхука (добавьте это)
+            webhook_info = await application.bot.get_webhook_info()
+            logger.info(f"Текущий вебхук: {webhook_info.url}")
+            
+            # Если всё успешно - выходим из цикла
+            break
+            
+        except Exception as e:
+            attempt += 1
+            logger.error(f"Попытка {attempt}/{max_attempts} не удалась: {e}")
+            if attempt == max_attempts:
+                raise
+            await asyncio.sleep(5 * attempt)  # Увеличиваем задержку с каждой попыткой
     
-    await application.initialize()
-    await application.bot.set_webhook(
-        url=f"{APP_URL}/telegram",
-        secret_token=SECRET_TOKEN
-    )
-    
+    # Запускаем сервер
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
     await serve(app, config)
